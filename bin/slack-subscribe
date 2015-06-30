@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+
+require 'yaml'
+require 'http'
+require 'json'
+
+require 'faye/websocket'
+require 'eventmachine'
+
+path = ARGV.shift
+unless path
+  STDERR.puts("usage: test config_path")
+  exit(1)
+end
+unless File.exist?(path)
+  STDERR.puts("#{path} does not exist")
+  exit(1)
+end
+
+config = YAML.load(File.read(path))
+token = config[:token]
+
+json = HTTP.get("https://slack.com/api/rtm.start?token=#{token}").to_s
+data = JSON.parse(json)
+
+me = data['self']['name']
+users = {}
+channels = {}
+
+users[data['self']['id']] = me
+data['users'].each do |u|
+  users[u['id']] = u['name']
+end
+
+data['channels'].each do |ch|
+  channels[ch['id']] = ch['name']
+end
+
+url = data['url']
+EM.run do
+  ws = Faye::WebSocket::Client.new(url)
+
+  ws.on :open do |event|
+    p [:open]
+  end
+
+  ws.on :message do |event|
+    data = JSON.parse(event.data)
+    type = data['type']
+    case type
+    when 'message'
+      c = channels[data['channel']]
+      u = users[data['user']]
+      m = data['text']
+      t = Time.at(data['ts'].to_i)
+      unless data['channel']
+        puts [:message, data]
+      end
+      puts("#{t} #{c}:(#{u}) #{m}")
+    when 'presence_change',
+         'channel_marked',
+         'star_added',
+         'user_typing',
+         'pref_change',
+         'group_marked'
+      # nothing to do
+    else
+      p [:message, data]
+    end
+  end
+
+  ws.on :close do |event|
+    p [:close, event.code, event.reason]
+    ws = nil
+    puts :bye
+  end
+end
